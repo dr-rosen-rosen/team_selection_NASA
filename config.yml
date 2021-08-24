@@ -1,0 +1,20 @@
+default:
+    py_version: 'python3/bin/python'
+    task_lists_and_categories: 'task_lists_and_categories.xlsx'
+    sync_offset: 50 # Seconds to lag synchrony
+    sync_roles: !expr c('CDR','FE','MS1','MS2')
+    sync_measures: !expr c('EDA','HR')
+    sync_metrics: !expr c('AR','Driver','Empath')
+    sync_sampling_freq: 'S' # need to turn this into a dict to match resampling to specific measures
+    sync_corr_method: 'pearson'
+    sync_use_residuals: TRUE
+    sync_missing_E4_flag: 'M'
+    sync_NA_E4_flag: 'NA'
+    sync_db_path: '/HERA_DBs'
+    HERA_Roles_to_IDs_C5_f: 'HERA_Roles_to_IDs_C5.xlsx'
+mike:
+    inherits: default
+    root_data_dir: '/Users/mrosen44/OneDrive - Johns Hopkins University/E4_Data'
+salar:
+    inhereits: default
+    task_list_f_loc:
