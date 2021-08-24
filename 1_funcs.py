@@ -75,7 +75,96 @@ def get_task_list(task_lists_and_categories, data_dir):
 
 '''Add import functions'''
 
-#Funciton to connect to appropriate db (workaround for not being able to share large db files on onedrive)
+### Creates energy metric for ACC data
+def create_ACC_energy_metric(E4_data):
+    # convert x, y , z to energy metric
+    # consider 10.1371/journal.pone.0160644
+    dimensions = ['x','y','z']
+    for dimension in dimensions:
+        E4_data[dimension] = E4_data[dimension].apply(lambda x: np.square(x))
+    E4_data['energy'] = E4_data[dimensions].sum(axis=1)
+    E4_data['energy'] = E4_data['energy']**(1/2)
+    E4_data.drop(columns=dimensions,inplace=True)
+    return(E4_data)
+
+### Calculates matrix of synch coefficients
+
+def get_sync_coef(E4_tab, Role_E4_dict, sampling_freq, offset, use_residuals, corr_method):
+    ### rename columns as roles instead of device IDs
+    E4_tab.columns.name = None
+    Role_to_cols = {v: k for k, v in Role_E4_dict.items()}
+    E4_tab.rename(columns=Role_to_cols,inplace=True)
+    working_roles = list(E4_tab.columns.values) # for only processing roles present in the data
+    ### Sets up df to calculate and store data for given task
+    Sync_Coefs = pd.DataFrame(index=working_roles,columns=working_roles,data=None)
+
+    ### Creates Table 1 in Guastello and Perisini
+    for from_role in working_roles: # from roles are rows of sync_coef matrix from guastello
+        ### calculate and store autocorrelation
+        Sync_Coefs.loc[from_role,from_role] = acf(E4_tab[from_role],fft = True, adjusted=True, nlags=offset)[offset]
+        to_roles = [role for role in working_roles if role != from_role] # gets all other roles
+        for to_role in to_roles:
+            E4_temp = E4_tab.copy()
+
+            # gets residuals from acf (controls for autocorrelation)... maybe better way to do this???
+            E4_temp.dropna(axis=0,inplace=True,how='any')
+            E4_temp = E4_temp.asfreq(freq=sampling_freq)
+            if use_residuals:
+                to_residuals =  AutoReg(E4_temp[to_role], lags = [offset]).fit().resid
+                to_residuals = pd.DataFrame({'TimeStamp':to_residuals.index, to_role:to_residuals.values})
+                to_residuals.set_index('TimeStamp', inplace = True)
+                E4_temp.drop(columns=to_role, inplace = True)
+                E4_temp = E4_temp.merge(to_residuals, on = 'TimeStamp', how = 'outer')
+            else: pass
+
+            E4_temp[to_role] = E4_temp[to_role].shift(periods=(offset*-1),freq=sampling_freq)
+            E4_temp.dropna(axis=0,inplace=True,how='any')
+            '''
+            HEY! below where it says .corr(method=corr_method) is where you can plug in any python function that takes two arrays
+            and returns a float. Right now it's set above and does a pearson corrleation. There may be better ways to do this all around,
+            but if you believe the docs the .corr method will take any function you define.
+            '''
+            coef_matrix = E4_temp[[from_role,to_role]].corr(method=corr_method) # RIGHT HERE!!!
+            Sync_Coefs.loc[from_role,to_role] = coef_matrix.loc[from_role,to_role]
+    return(Sync_Coefs, working_roles)
+
+def update_sync_metrics(Sync_df, Sync_Coefs, i, row, working_roles, measure):
+    Se = 'Se_'+measure
+    Sync_df.loc[i,'Task_num'] = row['Task_num']
+    print(row['Task_num'])
+    highest_empath = ()
+    Sync_Coefs_sq = np.square(Sync_Coefs) # added to
+    for role in working_roles:
+        Sync_df.loc[i,str(role+'_AR_'+measure)] = Sync_Coefs.loc[role,role]
+        e_score = Sync_Coefs_sq[role].sum() #empath scores
+        Sync_df.loc[i,str(role+'_Empath_'+measure)] = e_score
+        if not highest_empath:
+            highest_empath = (role,e_score)
+        elif highest_empath[1] < e_score:
+            highest_empath = (role,e_score)
+        else: pass
+        Sync_df.loc[i,str(role+'_Driver_'+measure)] = Sync_Coefs_sq.loc[role,working_roles].sum(axis=0) #driver scores
+
+    # saves Se score
+    if highest_empath:
+        empath = highest_empath[0]
+        V_prime = Sync_Coefs_sq[empath].copy()
+        V_prime.drop(index=empath,inplace=True)
+        M = Sync_Coefs_sq.drop(columns=empath)
+        M.drop(index=empath,inplace=True)
+        if not M.isnull().values.any(): #skips if there is missing info.. need to figure out why it would get here and be empty
+            M1 = M.astype('float',copy=True)
+            M_inv = pd.DataFrame(data = np.linalg.pinv(M1.values),columns=M1.columns,index=M1.index)
+            Q = M_inv.dot(V_prime)
+            Sync_df.loc[i,Se] = V_prime.dot(Q)
+            print(V_prime.dot(Q))
+        else:
+            Sync_df.loc[i,Se] = 99
+            print('No getting to Se calc..')
+            print(M)
+    else: print('no highest empath?')
+    return(Sync_df)
+### Funciton to connect to appropriate db (workaround for not being able to share large db files on onedrive)
 def db_connection(db_path,mission,MD):
     #from pathlib import Path
     connection = None
@@ -87,7 +176,53 @@ def db_connection(db_path,mission,MD):
     connection.text_factory = lambda x: unicode(x, 'utf-8', 'ignore')
     return connection, metadata
 
+### Pulls all data for given task and roles
+def get_E4_data(E4_ids, measure, sampling_freq, db_path, row):
+    print('here!')
+    E4_tab = pd.DataFrame(data = None) # One dataframe for all of the E4 data for specific task
+    all_E4s_inData = True # flag used to stop synch calculations if there is missing E4 data for a task
+    ### this for loop builds dataframe with timestamp as index, device id's as column names, and measure as values
+    for E4 in E4_ids:
+        E4_data = pd.DataFrame(data = None) # df for specific role for specific task
+        try:
+            connection, metadata = db_connection(db_path,row.Team,row.Mission_day)
+            t_name = str('Table_'+E4+'_'+measure)
+            t = metadata.tables[t_name]
+            s = select([t]).where((t.c.TimeStamp >= row['Start Time']) & (t.c.TimeStamp <= row['Stop Time']))
+            rp = connection.execute(s)
+            E4_data = pd.DataFrame(rp.fetchall())
+        except:
+            print('Problem with DB for '+E4+'_'+measure+' in '+str(row.Team)+' on '+str(row.Mission_day))
+        ### checks for no data in df and flags fact that there's missing E4 data to stop synchrony calcs below
+        if E4_data.empty:
+            print('No data in DB...')
+            all_E4s_inData = False # will stop further synch calculations below
+        else:
+            E4_data.columns = rp.keys() # assigns column names for db
+            # Set TZ for timestamps
+            E4_data.TimeStamp = pd.to_datetime(E4_data.TimeStamp)
+            E4_data.TimeStamp = E4_data.TimeStamp.dt.tz_localize(pytz.timezone('UTC')) # E4 timestamps are stored in utc
+            E4_data.set_index('TimeStamp', inplace = True)
+
+            ### Creates energy metric for ACC data
+            if measure == 'ACC':
+                E4_data = create_ACC_energy_metric(E4_data)
+            else: pass
+
+            ### resamples to the set sampling frequency (in config file)
+            E4_data = E4_data.resample(sampling_freq).mean()
+
+            ### renames data column to device id
+            E4_data.columns = [E4]
+            ### adds E4_data for one role to the overall E4_tab dataframe
+            if E4_tab.empty:
+                E4_tab = E4_data.copy()
+            else:
+                E4_tab = E4_tab.merge(E4_data, on = 'TimeStamp', how = 'outer')
+    return(E4_tab, all_E4s_inData)
+
 def get_E4_synchronies(tasks_df, offset, roles, measures, sampling_freq, corr_method, use_residuals, missing_E4_flag, NA_E4_flag, db_path, save_csv):
+    ### Makes sure things are typed correctly (they are switching to float being pased to R and back)
     tasks_df['Mission_day'] = tasks_df['Mission_day'].astype('int')
     tasks_df['Task_num'] = tasks_df['Task_num'].astype('int')
     # Set up dataframe to store results; creates one dataframe for all loops
@@ -98,15 +233,13 @@ def get_E4_synchronies(tasks_df, offset, roles, measures, sampling_freq, corr_me
         cols.append(role+'_Empath_'+measure)
         cols.append(role+'_AR_'+measure)
     Sync_df = pd.DataFrame(columns=cols,data=None,index=tasks_df.index)
-
+    ### for each measure, calculate synchronices for each task in the task list
     for measure in measures:
-        '''Iterate through each task in the task dataframe, create Table 1 measures from Guastello and Peressini:'''
-        Se = 'Se_'+measure
+        ### Iterate through each task in the task dataframe, create Table 1 measures from Guastello and Peressini:
         for i, row in tasks_df.iterrows():
             E4_ids =  [x for x in row[roles].values if str(x) != 'nan'] # Drops any roles that have no E4 ID
-            E4_ids = [x for x in E4_ids if str(x) != NA_E4_flag]
+            E4_ids = [x for x in E4_ids if str(x) != NA_E4_flag] # Drops any roles with fallged issues with E4 data
             Role_E4_dict = row[roles].to_dict() # Creates dict for relabeling roles and device IDs
-
             # runs for all tasks with a dyad or greater with no missing E4 data
             if (len(E4_ids) <= 1):
                 print('Task List: Too few E4s..')
@@ -118,133 +251,16 @@ def get_E4_synchronies(tasks_df, offset, roles, measures, sampling_freq, corr_me
                 print('Task List: Incomplete E4 data...')
                 pass
             else:
-                E4_tab = pd.DataFrame(data = None)
-                all_E4s_inData = True
-                for E4 in E4_ids:
-                    # this for loop builds dataframe with timestamp as index, device id's as column names, and measure as values
-                    # Pulls data from DB
-                    E4_data = pd.DataFrame(data = None)
-                    try:
-                        connection, metadata = db_connection(db_path,row.Team,row.Mission_day)
-                        t_name = str('Table_'+E4+'_'+measure)
-                        t = metadata.tables[t_name]
-                        s = select([t]).where((t.c.TimeStamp >= row['Start Time']) & (t.c.TimeStamp <= row['Stop Time']))
-                        rp = connection.execute(s)
-                        E4_data = pd.DataFrame(rp.fetchall())
-                    except:
-                        #E4_data.drop(E4_data.index, inplace=True) # gets rid of data from previous cycle through loop if pulling data fails
-                        print('Problem with DB for '+E4+'_'+measure+' in '+str(row.Team)+' on '+str(row.Mission_day))
-
-                    if E4_data.empty:
-                        print('No data in DB...')
-                        all_E4s_inData = False
-                    else:
-                        E4_data.columns = rp.keys()
-
-                        # Set TZ for timestamps
-                        E4_data.TimeStamp = pd.to_datetime(E4_data.TimeStamp)
-                        E4_data.TimeStamp = E4_data.TimeStamp.dt.tz_localize(pytz.timezone('UTC')) # E4 timestamps are stored in utc
-                        E4_data.set_index('TimeStamp', inplace = True)
-
-                        if measure == 'ACC':
-                            # convert x, y , z to energy metric
-                            # consider 10.1371/journal.pone.0160644
-                            dimensions = ['x','y','z']
-                            for dimension in dimensions:
-                                E4_data[dimension] = E4_data[dimension].apply(lambda x: np.square(x))
-                            E4_data['energy'] = E4_data[dimensions].sum(axis=1)
-                            E4_data['energy'] = E4_data['energy']**(1/2)
-                            E4_data.drop(columns=dimensions,inplace=True)
-                        else: pass
-
-                        E4_data = E4_data.resample(sampling_freq).mean()
-
-                        # renames data column to device id
-                        E4_data.columns = [E4]
-
-                        if E4_tab.empty:
-                            E4_tab = E4_data.copy()
-                        else:
-                            E4_tab = E4_tab.merge(E4_data, on = 'TimeStamp', how = 'outer')
+                E4_tab, all_E4s_inData = get_E4_data(E4_ids = E4_ids, measure = measure,
+                                                    sampling_freq = sampling_freq, db_path = db_path, row = row)
                 if all_E4s_inData:
-                    # rename columns as roles instead of device IDs
-                    E4_tab.columns.name = None
-                    Role_to_cols = {v: k for k, v in Role_E4_dict.items()}
-                    E4_tab.rename(columns=Role_to_cols,inplace=True)
-
-
-                    working_roles = list(E4_tab.columns.values) # for only processing roles present in the data
-                    Sync_Coefs = pd.DataFrame(index=working_roles,columns=working_roles,data=None)
-
-                    #Creates Table 1 in Guastello and Perisini
-                    for from_role in working_roles: # from roles are rows of sync_coef matrix from guastello
-
-                        # calculate and store autocorrelation
-                        Sync_Coefs.loc[from_role,from_role] = acf(E4_tab[from_role],fft = True, adjusted=True, nlags=offset)[offset]
-
-                        to_roles = [role for role in working_roles if role != from_role] # gets all other roles
-                        for to_role in to_roles:
-                            E4_temp = E4_tab.copy()
-
-                            # gets residuals from acf (controls for autocorrelation)... maybe better way to do this???
-                            E4_temp.dropna(axis=0,inplace=True,how='any')
-                            E4_temp = E4_temp.asfreq(freq=sampling_freq)
-                            if use_residuals:
-                                to_residuals =  AutoReg(E4_temp[to_role], lags = [offset]).fit().resid
-                                to_residuals = pd.DataFrame({'TimeStamp':to_residuals.index, to_role:to_residuals.values})
-                                to_residuals.set_index('TimeStamp', inplace = True)
-                                E4_temp.drop(columns=to_role, inplace = True)
-                                E4_temp = E4_temp.merge(to_residuals, on = 'TimeStamp', how = 'outer')
-                            else: pass
-
-                            E4_temp[to_role] = E4_temp[to_role].shift(periods=(offset*-1),freq=sampling_freq)
-                            E4_temp.dropna(axis=0,inplace=True,how='any')
-
-                            '''
-                            HEY! below where it says .corr(method=corr_method) is where you can plug in any python function that takes two arrays
-                            and returns a float. Right now it's set above and does a pearson corrleation. There may be better ways to do this all around,
-                            but if you believe the docs the .corr method will take any function you define.
-                            '''
-
-                            coef_matrix = E4_temp[[from_role,to_role]].corr(method=corr_method) # RIGHT HERE!!!
-                            Sync_Coefs.loc[from_role,to_role] = coef_matrix.loc[from_role,to_role]
-
-                    # saves AR, driver and empath scores
-                    Sync_df.loc[i,'Task_num'] = row['Task_num']
-                    print(row['Task_num'])
-                    highest_empath = ()
-                    Sync_Coefs_sq = np.square(Sync_Coefs) # added to
-                    for role in working_roles:
-
-                        Sync_df.loc[i,str(role+'_AR_'+measure)] = Sync_Coefs.loc[role,role]
-                        #Sync_Coefs = np.square(Sync_Coefs)
-                        e_score = Sync_Coefs_sq[role].sum() #empath scores
-                        Sync_df.loc[i,str(role+'_Empath_'+measure)] = e_score
-                        if not highest_empath:
-                            highest_empath = (role,e_score)
-                        elif highest_empath[1] < e_score:
-                            highest_empath = (role,e_score)
-                        else: pass
-                        Sync_df.loc[i,str(role+'_Driver_'+measure)] = Sync_Coefs_sq.loc[role,working_roles].sum(axis=0) #driver scores
-
-                    # saves Se score
-                    if highest_empath:
-                        empath = highest_empath[0]
-                        V_prime = Sync_Coefs_sq[empath].copy()
-                        V_prime.drop(index=empath,inplace=True)
-                        M = Sync_Coefs_sq.drop(columns=empath)
-                        M.drop(index=empath,inplace=True)
-                        if not M.isnull().values.any(): #skips if there is missing info.. need to figure out why it would get here and be empty
-                            M1 = M.astype('float',copy=True)
-                            M_inv = pd.DataFrame(data = np.linalg.pinv(M1.values),columns=M1.columns,index=M1.index)
-                            Q = M_inv.dot(V_prime)
-                            Sync_df.loc[i,Se] = V_prime.dot(Q)
-                            print(V_prime.dot(Q))
-                        else:
-                            Sync_df.loc[i,Se] = 99
-                            print('No getting to Se calc..')
-                            print(M)
-                    else: print('no highest empath?')
+                    ### Calculates time lagged correlation matrix
+                    Sync_Coefs, working_roles = get_sync_coef(E4_tab = E4_tab, Role_E4_dict = Role_E4_dict,
+                                                                sampling_freq = sampling_freq, offset = offset,
+                                                                use_residuals = use_residuals, corr_method = corr_method)
+                    # Calculates and saves AR, driver and empath scores as well as overall Se score
+                    Sync_df = update_sync_metrics(Sync_df = Sync_df, Sync_Coefs = Sync_Coefs, i = i, row = row,
+                                                    working_roles = working_roles, measure = measure)
                 else: pass
     if save_csv:
         m = '_'.join(measures)

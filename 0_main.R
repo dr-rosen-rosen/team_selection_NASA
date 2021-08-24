@@ -29,7 +29,7 @@ tasks_df <- get_task_list(
 
 
 sync_df <- get_E4_synchronies(
-  tasks_df = tasks_df[1:100,],
+  tasks_df = tasks_df,
   offset = config$sync_offset,
   roles = config$sync_roles,
   measures = config$sync_measures,
@@ -44,7 +44,7 @@ sync_df <- get_E4_synchronies(
 
 sync_df_long <- reshape_sync_data(
   sync_df = sync_df,
-  tasks_df = tasks_df[1:100,],
+  tasks_df = tasks_df,
   roles = config$sync_roles,
   measures = config$sync_measures,
   metrics = config$sync_metrics,
