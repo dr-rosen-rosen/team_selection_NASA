@@ -164,6 +164,7 @@ def update_sync_metrics(Sync_df, Sync_Coefs, i, row, working_roles, measure):
             print(M)
     else: print('no highest empath?')
     return(Sync_df)
+
 ### Funciton to connect to appropriate db (workaround for not being able to share large db files on onedrive)
 def db_connection(db_path,mission,MD):
     #from pathlib import Path

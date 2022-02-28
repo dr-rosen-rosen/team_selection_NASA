@@ -5,6 +5,7 @@ default:
     sync_roles: !expr c('CDR','FE','MS1','MS2')
     sync_measures: !expr c('EDA','HR')
     sync_metrics: !expr c('AR','Driver','Empath')
+    tasks: !expr c('Dyad_action_task','Social','Team_action_task','Team_transition_task','Avg')
     sync_sampling_freq: 'S' # need to turn this into a dict to match resampling to specific measures
     sync_corr_method: 'pearson'
     sync_use_residuals: TRUE
@@ -12,6 +13,12 @@ default:
     sync_NA_E4_flag: 'NA'
     sync_db_path: '/HERA_DBs'
     HERA_Roles_to_IDs_C5_f: 'HERA_Roles_to_IDs_C5.xlsx'
+    fname_50s: 'Sync_df_EDA_HR-50offset_Trueresiduals_pearsoncorrMethod_runOn_2021-01-22.csv'
+    fname_20s: 'Synch_Survey_Combined_Sync_df_LONG_EDA_HR-20offset_Trueresiduals_pearsoncorrMethod_runOn_2021-01-25.csv'
+    fname_10s: 'Synch_Survey_Combined_Sync_df_LONG_EDA_HR-10offset_Trueresiduals_pearsoncorrMethod_runOn_2021-01-25.csv'
+    fname_5s: 'Synch_Survey_Combined_Sync_df_LONG_EDA_HR-5offset_Trueresiduals_pearsoncorrMethod_runOn_2021-01-25.csv'
+    fname_1s: 'Synch_Survey_Combined_Sync_df_LONG_EDA_HR-1offset_Trueresiduals_pearsoncorrMethod_runOn_2021-01-25.csv'
+
 mike:
     inherits: default
     root_data_dir: '/Users/mrosen44/OneDrive - Johns Hopkins University/E4_Data'
