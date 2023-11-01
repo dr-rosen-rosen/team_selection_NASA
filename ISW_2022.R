@@ -1,10 +1,11 @@
 ####################################################################################################
 ####################################################################################################
-################################ Main analysis file
+################################ ABANDONNED Main analysis file
 ################################ for IWS 2022
 ####################################################################################################
 ####################################################################################################
 library(tidyLPA)
+library(gamlss)
 
 df <- read_csv(
   here(config$root_data_dir,
@@ -92,7 +93,7 @@ f1$fits
 gamlss::histDist(Team_Perf_Indiv_Mean_0to1, family = BEINF1, nbins = 30, data = test_df)
 gamlss::histDist(edaEmpathAvg, family = exGAUS, nbins = 30, data = test_df)
 
-library(gamlss)
+
 
 m.1.gm <- gamlss::gamlss(
   formula = Team_Perf_Indiv_Mean_0to1 ~ edaEmpathAvg + hrEmpathAvg + 

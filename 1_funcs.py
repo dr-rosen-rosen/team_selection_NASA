@@ -135,7 +135,7 @@ def update_sync_metrics(Sync_df, Sync_Coefs, i, row, working_roles, measure):
     highest_empath = ()
     Sync_Coefs_sq = np.square(Sync_Coefs) # added to
     for role in working_roles:
-        Sync_df.loc[i,str(role+'_AR_'+measure)] = Sync_Coefs.loc[role,role]
+        Sync_df.loc[i,str(role+'_AR_'+measure)] = Sync_Coefs_sq.loc[role,role]
         e_score = Sync_Coefs_sq[role].sum() #empath scores
         Sync_df.loc[i,str(role+'_Empath_'+measure)] = e_score
         if not highest_empath:
@@ -179,7 +179,6 @@ def db_connection(db_path,mission,MD):
 
 ### Pulls all data for given task and roles
 def get_E4_data(E4_ids, measure, sampling_freq, db_path, row):
-    print('here!')
     E4_tab = pd.DataFrame(data = None) # One dataframe for all of the E4 data for specific task
     all_E4s_inData = True # flag used to stop synch calculations if there is missing E4 data for a task
     ### this for loop builds dataframe with timestamp as index, device id's as column names, and measure as values
@@ -222,7 +221,7 @@ def get_E4_data(E4_ids, measure, sampling_freq, db_path, row):
                 E4_tab = E4_tab.merge(E4_data, on = 'TimeStamp', how = 'outer')
     return(E4_tab, all_E4s_inData)
 
-def get_E4_synchronies(tasks_df, offset, roles, measures, sampling_freq, corr_method, use_residuals, missing_E4_flag, NA_E4_flag, db_path, save_csv):
+def get_E4_synchronies(tasks_df, offset, roles, measures, sampling_freq, corr_method, use_residuals, missing_E4_flag, NA_E4_flag, db_path, of_path, save_csv):
     ### Makes sure things are typed correctly (they are switching to float being pased to R and back)
     tasks_df['Mission_day'] = tasks_df['Mission_day'].astype('int')
     tasks_df['Task_num'] = tasks_df['Task_num'].astype('int')
@@ -266,10 +265,10 @@ def get_E4_synchronies(tasks_df, offset, roles, measures, sampling_freq, corr_me
     if save_csv:
         m = '_'.join(measures)
         out_file = 'Sync_df_{}-{}offset_{}residuals_{}corrMethod_runOn_{}.csv'.format(m,str(offset),str(use_residuals),corr_method,datetime.date(datetime.now()))
-        Sync_df.to_csv(os.path.join(os.getcwd(),'Synch_outputs',out_file),index=False)
+        Sync_df.to_csv(os.path.join(of_path,out_file),index=False)
     return(Sync_df)
 
-def reshape_sync_data(sync_df, tasks_df, roles, metrics, measures, data_dir, save_csv):
+def reshape_sync_data(sync_df, tasks_df, roles, metrics, measures, data_dir, of_path, save_csv):
 
     sync_df.dropna(subset=['Task_num'],inplace=True)
     sync_df['Task_num'] = sync_df['Task_num'].astype('int')
@@ -294,7 +293,7 @@ def reshape_sync_data(sync_df, tasks_df, roles, metrics, measures, data_dir, sav
 
     if save_csv:
         out_file = 'Sync_df_LONG_{}-{}offset_{}residuals_{}corrMethod_runOn_{}.csv'.format(m,str(offset),str(use_residuals),corr_method,datetime.date(datetime.now()))
-        Sync_df_long.to_csv(os.path.join(os.getcwd(),'Synch_outputs',out_file),index=False)
+        Sync_df_long.to_csv(os.path.join(of_path,out_file),index=False)
 
     # # Adds participant ID
     roles_IDs_df = pd.read_excel(os.path.join(data_dir,'HERA_Roles_to_IDs_C5.xlsx'),header=0,index_col=False)
